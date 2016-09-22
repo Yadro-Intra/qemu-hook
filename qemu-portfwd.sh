@@ -289,10 +289,32 @@ list_ips () {
 	ip -o addr | grep -o '\<inet [0-9.]\+' | cut -d' ' -f2 | grep -v '127\.'
 }
 
-ip_for_net () {
-	local net="$1"
+norm_xml () {
+	virsh "$@" | tr -s '[:space:]' ' ' | sed -e '1,$s/> </>\n</g' | tr '"' "'"
+}
 
-	virsh net-dumpxml "$net" | grep -m1 '<ip address=' | grep -wo '[0-9.]\+' | head -n1
+xml_for_net () {
+	norm_xml net-dumpxml "$1"
+}
+
+xml_for_vm () {
+	norm_xml dumpxml "$1"
+}
+
+ip_for_net () {
+	xml_for_net "$1" | grep -m1 '<ip address=' | grep -wo '[0-9.]\+' | head -n1
+}
+
+fwd_for_net () {
+	xml_for_net "$1" | grep -m1 '<forward '
+}
+
+net_is_on () {
+	virsh net-list --name | grep -q '^'"$1"'$'
+}
+
+vm_is_on () {
+	virsh list --name | grep -q '^'"$1"'$'
 }
 
 x_install_script () {
@@ -301,46 +323,58 @@ x_install_script () {
 	echo "Script '$targetScript' installed ok."
 }
 
+net_for_vm () {
+	xml_for_vm "$1" | grep '<source ' | grep ' network=' | sort -u
+}
+
 x_create_json_template () {
-	local comma=''
 	local n=0
-	local net='' ip=''
+	local net='' ip='' fwd='' on=''
 
 	{
-	echo -e '{'
+	echo -e '{\t"comment_created": "'$(date '+%F %T %z')'",'
 
-	echo -ne '\t"comment_libvirt_networks": [ '
+	echo -ne '\t"comment_libvirt_networks": [\n\t'
 	n=0
 	while read net; do
 		[ -z "$net" ] && continue
-		(( n == 0 )) || echo -ne ',\n\t\t\t'
+		(( n == 0 )) || echo -ne ',\n\t'
 		let n+=1
+		net_is_on "$net" && on='true' || on='false'
 		ip=$(ip_for_net "$net")
-		echo -ne '{ "name": "'"$net"'", "ip": "'"$ip"'" }'
+		fwd=$(fwd_for_net "$net")
+		echo -e '{\t"net": "'"$net"'",'
+		echo -e '\t\t"enabled": '$on','
+		echo -e '\t\t"ip": "'"$ip"'",'
+		echo -e '\t\t"fwd": "'"$fwd"'"'
+		echo -ne '\t}'
 	done < <(virsh net-list --all --name)
 	echo ' ],'
 
-	echo -ne '\t"comment_host_IPs": [ '
+	echo -ne '\t"comment_host_IPs": [\n\t\t'
 	n=0
 	while read ip; do
-		(( n == 0 )) || echo -ne ',\n\t\t\t'
+		(( n == 0 )) || echo -ne ',\n\t\t'
 		let n+=1
 		echo -n "\"$ip\""
 	done < <(list_ips)
 	echo ' ],'
 
-	echo -e '\t"forward": ['
+	echo -ne '\t"forward": [\n\t'
 	n=0
 	while read guest; do
 		[ -z "$guest" ] && continue
-		(( n == 0 )) && comma='' || comma=','
+		(( n == 0 )) || echo -ne ',\n\t'
 		let n+=1
-		echo -ne '\t\t'$comma'{\n\t\t\t"enabled": false,\n\t\t\t"guest": '
-		echo "\"$guest\","
-		echo -e '\t\t\t"external_ip": "1.2.3.4",'
-		echo -e '\t\t\t"internal_ip": "192.168.122.130",'
-		echo -e '\t\t\t"ports": [ { "host":2222, "guest":22 } ]'
-		echo -e '\t\t}'
+		vm_is_on "$guest" && on='true' || on='false'
+		net=$(net_for_vm "$guest")
+		echo -e '{\t"enabled": false,'
+		echo -e '\t\t"guest": '"\"$guest\""','
+		echo -e '\t\t"comment": {\t"running": '$on',\n\t\t\t\t"net": "'"$net"'" },'
+		echo -e '\t\t"external_ip": "1.2.3.4",'
+		echo -e '\t\t"internal_ip": "192.168.122.130",'
+		echo -e '\t\t"ports": [ { "host":2222, "guest":22 } ]'
+		echo -ne '\t}'
 	done < <(virsh list --all --name)
 	echo -e '\t]'
 	
