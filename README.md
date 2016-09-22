@@ -23,6 +23,8 @@ The config is a JSON file where the script will look (using `jq`) for these fiel
 		{
 			"enabled": true,
 			"guest": "test1",
+			"external_if": "eth0",
+			"internal_if": "virbr0",
 			"external_ip": "10.1.0.1",
 			"internal_ip": "192.0.2.1",
 			"ports": [ { "host":443, "guest":443 }, { "host":2222, "guest":22 } ]
@@ -30,6 +32,8 @@ The config is a JSON file where the script will look (using `jq`) for these fiel
 		{
 			"enabled": false,
 			"guest": "test2",
+			"external_if": "eth1",
+			"internal_if": "virbr1",
 			"external_ip": "10.1.0.2",
 			"internal_ip": "192.0.2.2",
 			"ports": [ { "host":443, "guest":443 }, { "host":2222, "guest":22 } ]

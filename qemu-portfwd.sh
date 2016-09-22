@@ -53,7 +53,7 @@ targetJson="${targetScript}.json"
 RUN=''
 [ "$DEBUG_RULES" = 'yes' ] && RUN='echo RUN:'
 
-# exec >>/tmp/qemu.log 2>&1
+# exec >>/var/log/qemu-hook.log 2>&1
 
 LOGGER=$(type -p logger)
 
@@ -61,7 +61,7 @@ log () {
 	if [ -n "$LOGGER" -a -x "$LOGGER" ]; then
 		"$LOGGER" -t 'libvirt:hook:qemu' "$@"
 	else
-		echo "$@" # >> /tmp/qemu.log
+		echo "$(date '+%F_%T_%z') $@" >> /var/log/qemu-hook.log
 	fi
 }
 
@@ -102,11 +102,11 @@ str_port_list () {
 }
 
 run_rules () {
-	local op="$1"
-	local external_ip="$2"
-	local host_port="$3"
-	local internal_ip="$4"
-	local guest_port="$5"
+	local op="$1" ; shift
+	local external_ip="$1" ; shift
+	local host_port="$1" ; shift
+	local internal_ip="$1" ; shift
+	local guest_port="$1" ; shift
 
 	local OP1='-L' OP2='-L'
 
@@ -119,13 +119,29 @@ run_rules () {
 			"'$external_ip:$host_port' to '$internal_ip:$guest_port'.";;
 	esac
 
-	$RUN iptables -t nat $OP1 PREROUTING \
-		-d ${external_ip} -p tcp --dport ${host_port} \
-		-j DNAT --to ${internal_ip}:${guest_port}
+## These rules are from the official manual -- they don't work.
+#	$RUN iptables -t nat $OP1 PREROUTING \
+#		-d ${external_ip} -p tcp --dport ${host_port} \
+#		-j DNAT --to ${internal_ip}:${guest_port}
+#
+#	$RUN iptables $OP2 FORWARD \
+#		-d ${internal_ip}/32 -p tcp -m state --state NEW \
+#		-m tcp --dport ${guest_port}
+
+## These are from http://git.zaytsev.net/
+
+#	$RUN iptables -t nat $OP2 PREROUTING \
+#		-d ${external_ip} -i ${external_if} -p tcp -m tcp --dport ${host_port} \
+#		-j DNAT --to-destination ${internal_ip}:${guest_port}
+
+	$RUN iptables -t nat $OP2 PREROUTING \
+		-d ${external_ip} -p tcp -m tcp --dport ${host_port} \
+		-j DNAT --to-destination ${internal_ip}:${guest_port}
 
 	$RUN iptables $OP2 FORWARD \
-		-d ${internal_ip}/32 -p tcp -m state --state NEW \
-		-m tcp --dport ${guest_port}
+		-d ${internal_ip} \
+		-p tcp -m state --state NEW -m tcp --dport ${guest_port} \
+		-j ACCEPT
 }
 
 del_rules () {
@@ -289,6 +305,10 @@ list_ips () {
 	ip -o addr | grep -o '\<inet [0-9.]\+' | cut -d' ' -f2 | grep -v '127\.'
 }
 
+list_intfs () {
+	ip -o link | grep -v LOOPBACK | cut -d: -f2 | tr -d '[ \t]'
+}
+
 norm_xml () {
 	virsh "$@" | tr -s '[:space:]' ' ' | sed -e '1,$s/> </>\n</g' | tr '"' "'"
 }
@@ -310,14 +330,19 @@ fwd_for_net () {
 }
 
 net_is_on () {
-	virsh net-list --name | grep -q '^'"$1"'$'
+	virsh net-list --name  | grep -v '^$' | grep -q '^'"$1"'$'
 }
 
 vm_is_on () {
-	virsh list --name | grep -q '^'"$1"'$'
+	virsh list --name | grep -v '^$' | grep -q '^'"$1"'$'
+}
+
+running_vm_list () {
+	virsh list --name | grep -v '^$'
 }
 
 x_install_script () {
+	[ $(running_vm_list | wc -l) = 0 ] || error "Please, stop [$(running_vm_list)] first!"
 	cp -iv "$exe" "$targetScript" || error $? "Cannot install '$exe' as '$targetScript'."
 	chmod -v a+x "$targetScript" || error $? "Cannot chmod a+x '$targetScript'."
 	echo "Script '$targetScript' installed ok."
@@ -329,7 +354,7 @@ net_for_vm () {
 
 x_create_json_template () {
 	local n=0
-	local net='' ip='' fwd='' on=''
+	local net='' ip='' fwd='' on='' dev=''
 
 	{
 	echo -e '{\t"comment_created": "'$(date '+%F %T %z')'",'
@@ -351,13 +376,14 @@ x_create_json_template () {
 	done < <(virsh net-list --all --name)
 	echo ' ],'
 
-	echo -ne '\t"comment_host_IPs": [\n\t\t'
+	echo -ne '\t"comment_host_interfaces": [\n\t\t'
 	n=0
-	while read ip; do
+	while read dev; do
 		(( n == 0 )) || echo -ne ',\n\t\t'
 		let n+=1
-		echo -n "\"$ip\""
-	done < <(list_ips)
+		ip=$(ip -o addr show dev "$dev" | grep -o '\<inet [0-9.]\+/' | grep -o '[0-9.]\+')
+		echo -n "{ \"dev\": \"$dev\", \"ip\": \"$ip\" }"
+	done < <(list_intfs)
 	echo ' ],'
 
 	echo -ne '\t"forward": [\n\t'
@@ -371,6 +397,8 @@ x_create_json_template () {
 		echo -e '{\t"enabled": false,'
 		echo -e '\t\t"guest": '"\"$guest\""','
 		echo -e '\t\t"comment": {\t"running": '$on',\n\t\t\t\t"net": "'"$net"'" },'
+		echo -e '\t\t"external_if": "!FILL-ME!",'
+		echo -e '\t\t"internal_if": "!FILL-ME!",'
 		echo -e '\t\t"external_ip": "1.2.3.4",'
 		echo -e '\t\t"internal_ip": "192.168.122.130",'
 		echo -e '\t\t"ports": [ { "host":2222, "guest":22 } ]'
@@ -389,14 +417,17 @@ x_install_json () {
 }
 
 x_install () {
+	local installed='no'
 
 	[ -w /etc/passwd ] || error 1 "You must be root here."
 	[ -d "$installDir/." ] || error 1 "There is no '$installDir' directory."
 
 	if [ -e "$targetScript" ]; then
-		confirm "Write over existing '$targetScript'" && x_install_script
+		confirm "Write over existing '$targetScript'" && {
+			x_install_script && installed='yes'
+		}
 	else
-		x_install_script
+		x_install_script && installed='yes'
 	fi
 
 	x_create_json_template || error $? "Cannot create JSON template."
@@ -409,7 +440,11 @@ x_install () {
 		x_install_json
 	fi
 
-	echo "Installed ok (you still have to edit '$targetJson')."
+	if [ "$installed" = 'yes' ]; then
+		echo "Installed ok (you still have to edit '$targetJson')."
+		echo "Don't forget to restart 'libvirtd' service now!"
+		echo "Then run your guests back again..."
+	fi
 }
 
 do_extra () {
