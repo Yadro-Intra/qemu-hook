@@ -3,11 +3,20 @@
 bash script for /etc/libvirt/hooks/ to configure QEMU guests' connectivity
 as described in the [libvirt Networking: Forwarding Incoming Connections](http://wiki.libvirt.org/page/Networking#Forwarding_Incoming_Connections) manual.
 
-Run `./qemu-portfwd.sh x-check` to verify your environment (pre- and post-install).
+## Installation
 
-Run `sudo ./qemu-portfwd.sh x-install` to install the hook and config (interactive).
+1. Run `./qemu-portfwd.sh x-check` to verify your environment (pre- and post-install).
+2. Stop the guests.
+3. Run `sudo ./qemu-portfwd.sh x-install` to install the hook and config (interactive).
+4. Restart the `libvirtd` service (it might be `libvirt-bin` and `libvirt-guest` in Ubuntu 16+).
+5. Start the guests.
 
-The config is a JSON file where the script will look (using jq) for these fields:
+## Config notes
+
+- **Hint:** run `sudo ./qemu-portfwd.sh x-install` and refuse to install.
+Then check for `qemu-template.json` in the current directory...
+
+The config is a JSON file where the script will look (using `jq`) for these fields:
 ```json
 {
 	"forward": [
