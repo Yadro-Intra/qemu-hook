@@ -29,4 +29,9 @@ The config is a JSON file where the script will look (using jq) for these fields
 }
 ```
 
-It is still to be tuned up...
+As there is no comments in JSON, you may use `"enabled"` entries to turn the section on and off.
+
+Plus, one may add any other entries (say, `"comment": "this is my comment"`) as needed - any extra
+fields are merely ignored here.
+
+**It is still to be tuned up...**
