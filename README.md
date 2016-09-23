@@ -48,3 +48,17 @@ Plus, one may add any other entries (say, `"comment": "this is my comment"`) as 
 fields are merely ignored here.
 
 **It is still to be tuned up...**
+
+## Debug considerations
+
+There is a kernel TRACE facility (grep `/var/log/kern.log` for `TRACE:`):
+```
+iptables -t raw -A PREROUTING -p tcp --destination 192.168.0.0/24 --dport 80 -j TRACE
+```
+And tune up your `[r]syslog` config...
+
+## SELinux
+
+Real "Charlie Foxtrot" here :(
+
+

@@ -58,7 +58,9 @@ RUN=''
 LOGGER=$(type -p logger)
 
 log () {
-	if [ -n "$LOGGER" -a -x "$LOGGER" ]; then
+	if [ -t 2 ]; then
+		echo "$@" >&2
+	elif [ -n "$LOGGER" -a -x "$LOGGER" ]; then
 		"$LOGGER" -t 'libvirt:hook:qemu' "$@"
 	else
 		echo "$(date '+%F_%T_%z') $@" >> /var/log/qemu-hook.log
@@ -102,11 +104,15 @@ str_port_list () {
 }
 
 run_rules () {
-	local op="$1" ; shift
-	local external_ip="$1" ; shift
-	local host_port="$1" ; shift
-	local internal_ip="$1" ; shift
-	local guest_port="$1" ; shift
+	local op="$1"
+	local idx="$2"
+	local host_port="$3"
+	local guest_port="$4"
+
+	local external_if=$(fetch_value $idx "external_if")
+	local internal_if=$(fetch_value $idx "internal_if")
+	local external_ip=$(fetch_value $idx "external_ip")
+	local internal_ip=$(fetch_value $idx "internal_ip")
 
 	local OP1='-L' OP2='-L'
 
@@ -130,12 +136,8 @@ run_rules () {
 
 ## These are from http://git.zaytsev.net/
 
-#	$RUN iptables -t nat $OP2 PREROUTING \
-#		-d ${external_ip} -i ${external_if} -p tcp -m tcp --dport ${host_port} \
-#		-j DNAT --to-destination ${internal_ip}:${guest_port}
-
 	$RUN iptables -t nat $OP2 PREROUTING \
-		-d ${external_ip} -p tcp -m tcp --dport ${host_port} \
+		-d ${external_ip} -i ${external_if} -p tcp -m tcp --dport ${host_port} \
 		-j DNAT --to-destination ${internal_ip}:${guest_port}
 
 	$RUN iptables $OP2 FORWARD \
@@ -146,9 +148,6 @@ run_rules () {
 
 del_rules () {
 	local idx="$1"
-	local guest=$(fetch_value $idx "guest")
-	local external_ip=$(fetch_value $idx "external_ip")
-	local internal_ip=$(fetch_value $idx "internal_ip")
 	local num_ports=$(fetch_value $idx 'ports | length')
 	local pi=0 host_port='' guest_port=''
 
@@ -158,15 +157,12 @@ del_rules () {
 		host_port=$(fetch_value $idx "ports[$pi].host")
 		guest_port=$(fetch_value $idx "ports[$pi].guest")
 
-		run_rules del "${external_ip}" "${host_port}" "${internal_ip}" "${guest_port}"
+		run_rules del "$idx" "${host_port}" "${guest_port}"
 	done
 }
 
 add_rules () {
 	local idx="$1"
-	local guest=$(fetch_value $idx "guest")
-	local external_ip=$(fetch_value $idx "external_ip")
-	local internal_ip=$(fetch_value $idx "internal_ip")
 	local num_ports=$(fetch_value $idx 'ports | length')
 	local pi=0 host_port='' guest_port=''
 
@@ -176,7 +172,7 @@ add_rules () {
 		host_port=$(fetch_value $idx "ports[$pi].host")
 		guest_port=$(fetch_value $idx "ports[$pi].guest")
 
-		run_rules add "${external_ip}" "${host_port}" "${internal_ip}" "${guest_port}"
+		run_rules add "$idx" "${host_port}" "${guest_port}"
 	done
 }
 
@@ -184,12 +180,18 @@ handle_entry () {
 	local idx="$1"
 	local name="$2"
 	local task="$3"
+
 	local guest=$(fetch_value $idx "guest") # assert $guest = $name
+
+	local external_if=$(fetch_value $idx "external_if")
+	local internal_if=$(fetch_value $idx "internal_if")
 	local external_ip=$(fetch_value $idx "external_ip")
 	local internal_ip=$(fetch_value $idx "internal_ip")
+
 	local done='no'
 
 	debug "[$name][$task][$idx] guest=[$guest]" \
+		"external_if=[$external_if] internal_if=[$internal_if]" \
 		"external_ip=[$external_ip] internal_ip=[$internal_ip]" \
 		"ports:$(str_port_list $idx)"
 
@@ -234,7 +236,7 @@ main () {
 	local phase="$3" # no need
 	local some_shit="$4"
 
-	# log "$0 $@"
+	debug "$0 $@"
 
 	[ -f "$json" ] || error 1 "No config file '$json' for guest '$guest' task '$task'."
 
@@ -242,50 +244,6 @@ main () {
 	[ -z "$idx" ] && error 1 "No config for guest '$guest'."
 
 	handle_entry "$idx" "$@"
-}
-
-x_check () {
-	echo "The script is being ran as '$exe'."
-
-	echo -n "The installation directory '$installDir' "
-	[ -d "$installDir/." ] || echo -n "NOT "; echo "exists."
-
-	echo -n "The hook script '$targetScript' "
-	[ -e "$targetScript" ] || echo -n "NOT "; echo "exists."
-	echo -n "+ It is "
-	[ -f "$targetScript" ] || echo -n "NOT "; echo "a file."
-	echo -n "+ It is "
-	[ -x "$targetScript" ] || echo -n "NOT "; echo "executable."
-
-	echo -n "The hook's config '$targetJson' "
-	[ -e "$targetJson" ] || echo -n "NOT "; echo "exists."
-	echo -n "+ It is "
-	[ -f "$targetJson" ] || echo -n "NOT "; echo "a file."
-	echo -n "+ It is "
-	[ -r "$targetJson" ] || echo -n "NOT "; echo "readable."
-
-	local jq=$(type -p jq)
-	echo -n "The jq(1) utility is "
-	[ -z "$jq" ] && echo "NOT available!" || echo "installed as '$jq'."
-	echo -n "+ It is "
-	[ -n "$jq" -a -x "$jq" ] || echo -n "NOT "; echo "executable."
-
-	if [ -r "$targetJson" -a -n "$jq" -a -x "$jq" ]; then
-		echo -n "JSON in '$targetJson' is "
-		"$jq" . "$targetJson" >/dev/null 2>&1 || echo -n "NOT "
-		echo "valid."
-	fi
-
-	local virsh=$(type -p virsh)
-	echo -n "The virsh(1) utility is "
-	[ -z "$virsh" ] && echo "NOT available!" || echo "installed as '$virsh'."
-	echo -n "+ It is "
-	[ -n "$virsh" -a -x "$virsh" ] || echo -n "NOT "; echo "executable."
-	if [ -n "$virsh" -a -x "$virsh" ]; then
-		echo -n "+ You can "
-		"$virsh" list >/dev/null 2>&1 || echo -n "NOT "
-		echo "run it as '$(id -un)'."
-	fi
 }
 
 confirm () {
@@ -350,6 +308,80 @@ x_install_script () {
 
 net_for_vm () {
 	xml_for_vm "$1" | grep '<source ' | grep ' network=' | sort -u
+}
+
+x_check () {
+	echo "The script is being ran as '$exe'."
+
+	echo
+	echo -n "The installation directory '$installDir' "
+	[ -d "$installDir/." ] || echo -n "NOT "; echo "exists."
+
+	echo
+	echo -n "The hook script '$targetScript' "
+	[ -e "$targetScript" ] || echo -n "NOT "; echo "exists."
+	echo -n "+ It is "
+	[ -f "$targetScript" ] || echo -n "NOT "; echo "a file."
+	echo -n "+ It is "
+	[ -x "$targetScript" ] || echo -n "NOT "; echo "executable."
+
+	echo
+	echo -n "The hook's config '$targetJson' "
+	[ -e "$targetJson" ] || echo -n "NOT "; echo "exists."
+	echo -n "+ It is "
+	[ -f "$targetJson" ] || echo -n "NOT "; echo "a file."
+	echo -n "+ It is "
+	[ -r "$targetJson" ] || echo -n "NOT "; echo "readable."
+
+	echo
+	local jq=$(type -p jq)
+	echo -n "The jq(1) utility is "
+	[ -z "$jq" ] && echo "NOT available!" || echo "installed as '$jq'."
+	echo -n "+ It is "
+	[ -n "$jq" -a -x "$jq" ] || echo -n "NOT "; echo "executable."
+
+	if [ -r "$targetJson" -a -n "$jq" -a -x "$jq" ]; then
+		echo -n "JSON in '$targetJson' is "
+		"$jq" . "$targetJson" >/dev/null 2>&1 || echo -n "NOT "
+		echo "valid."
+	fi
+
+	echo
+	local virsh=$(type -p virsh)
+	echo -n "The virsh(1) utility is "
+	[ -z "$virsh" ] && echo "NOT available!" || echo "installed as '$virsh'."
+	echo -n "+ It is "
+	[ -n "$virsh" -a -x "$virsh" ] || echo -n "NOT "; echo "executable."
+	if [ -n "$virsh" -a -x "$virsh" ]; then
+		echo -n "+ You can "
+		"$virsh" list >/dev/null 2>&1 || echo -n "NOT "
+		echo "run it as '$(id -un)'."
+
+		echo "You have running VMs: $(running_vm_list | wc -l)."
+		running_vm_list | sed -e '1,$s/^/+ /'
+	fi
+
+	echo
+	local service=$(type -p service)
+	if [ -n "$service" -a -x "$service" ]; then
+		echo "You have 'service' tool ($service) to control System V init."
+		echo "You may have to restart these 'service's:"
+		service --status-all | grep libvirt
+	fi
+
+	echo
+	local systemctl=$(type -p systemctl)
+	if [ -n "$systemctl" -a -x "$systemctl" ]; then
+		echo "You have 'systemctl' tool ($systemctl) to control systemd."
+		echo "You may have to restart these 'service's:"
+		systemctl --all | grep libvirt | tr -s '[ \t]' ' ' | sed -e '1,$s/^/+ /'
+	fi
+
+	echo
+	local logger=$(type -p logger)
+	echo -n "The script "
+	[ -n "$systemctl" -a -x "$systemctl" ] && echo "MAY use logger ($logger)." \
+		|| echo "will NOT use logger."
 }
 
 x_create_json_template () {
